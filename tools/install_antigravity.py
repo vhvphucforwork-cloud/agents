@@ -62,8 +62,12 @@ def _generated_plugins(repo_root: Path) -> list[Path]:
     return plugins
 
 
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
 def _link_one(src: Path, dst: Path, *, force: bool, report: InstallReport) -> None:
-    if dst.is_symlink():
+    if _is_link(dst):
         if dst.resolve(strict=False) == src:
             report.unchanged += 1
             return
@@ -79,7 +83,15 @@ def _link_one(src: Path, dst: Path, *, force: bool, report: InstallReport) -> No
         return
 
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.symlink_to(src, target_is_directory=src.is_dir())
+    try:
+        dst.symlink_to(src, target_is_directory=src.is_dir())
+    except OSError:
+        if os.name == "nt" and src.is_dir():
+            import _winapi
+
+            _winapi.CreateJunction(str(src), str(dst))
+        else:
+            raise
     report.linked += 1
 
 
@@ -94,7 +106,7 @@ def _legacy_plugins_dir(config_dir: Path, legacy_config_dir: Path | None) -> Pat
 
 
 def _is_repo_link(path: Path, generated_root: Path) -> bool:
-    return path.is_symlink() and _is_relative_to(path.resolve(strict=False), generated_root)
+    return _is_link(path) and _is_relative_to(path.resolve(strict=False), generated_root)
 
 
 def install(

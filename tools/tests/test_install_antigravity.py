@@ -2,9 +2,30 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from tools.install_antigravity import default_config_dir, install, uninstall
+from tools.install_antigravity import _is_link, default_config_dir, install, uninstall
+
+
+def _make_link(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError:
+        if os.name == "nt":
+            import _winapi
+
+            created_tmp = False
+            if not target.exists():
+                target.mkdir(parents=True)
+                created_tmp = True
+            try:
+                _winapi.CreateJunction(str(target), str(link))
+            finally:
+                if created_tmp:
+                    target.rmdir()
+        else:
+            raise
 
 
 def _write_generated_antigravity(repo_root: Path) -> None:
@@ -41,7 +62,7 @@ def test_install_creates_idempotent_symlinks(tmp_path: Path):
     assert first.linked == 1
     assert second.ok
     assert second.unchanged == 1
-    assert (config_dir / "plugins" / "demo").is_symlink()
+    assert _is_link(config_dir / "plugins" / "demo")
     assert (config_dir / "plugins" / "demo" / "plugin.json").is_file()
 
 
@@ -68,7 +89,7 @@ def test_force_replaces_conflicting_symlink_only(tmp_path: Path):
     _write_generated_antigravity(repo_root)
     target = config_dir / "plugins" / "demo"
     target.parent.mkdir(parents=True)
-    target.symlink_to(other)
+    _make_link(target, other)
 
     blocked = install(repo_root=repo_root, config_dir=config_dir)
     forced = install(repo_root=repo_root, config_dir=config_dir, force=True)
@@ -87,7 +108,7 @@ def test_uninstall_removes_only_repo_owned_symlinks(tmp_path: Path):
     unrelated_target = tmp_path / "unrelated-plugin"
     unrelated_target.mkdir()
     unrelated = config_dir / "plugins" / "unrelated"
-    unrelated.symlink_to(unrelated_target)
+    _make_link(unrelated, unrelated_target)
     real_dir = config_dir / "plugins" / "real"
     real_dir.mkdir()
 
@@ -96,14 +117,14 @@ def test_uninstall_removes_only_repo_owned_symlinks(tmp_path: Path):
     assert report.ok
     assert report.removed == 1
     assert not (config_dir / "plugins" / "demo").exists()
-    assert unrelated.is_symlink()
+    assert _is_link(unrelated)
     assert real_dir.is_dir()
 
 
 def _legacy_link(repo_root: Path, legacy_dir: Path, name: str = "demo") -> Path:
     link = legacy_dir / "plugins" / name
     link.parent.mkdir(parents=True, exist_ok=True)
-    link.symlink_to(repo_root / ".antigravity" / "plugins" / name)
+    _make_link(link, repo_root / ".antigravity" / "plugins" / name)
     return link
 
 
@@ -116,16 +137,16 @@ def test_install_moves_repo_links_out_of_the_legacy_dir(tmp_path: Path):
     unrelated_target = tmp_path / "unrelated-plugin"
     unrelated_target.mkdir()
     unrelated = legacy_dir / "plugins" / "unrelated"
-    unrelated.symlink_to(unrelated_target)
+    _make_link(unrelated, unrelated_target)
 
     report = install(repo_root=repo_root, config_dir=config_dir, legacy_config_dir=legacy_dir)
 
     assert report.ok
     assert report.linked == 1
     assert report.migrated == 1
-    assert (config_dir / "plugins" / "demo").is_symlink()
-    assert not old.is_symlink()
-    assert unrelated.is_symlink()
+    assert _is_link(config_dir / "plugins" / "demo")
+    assert not _is_link(old)
+    assert _is_link(unrelated)
 
 
 def test_install_keeps_legacy_link_when_new_link_fails(tmp_path: Path):
@@ -140,7 +161,7 @@ def test_install_keeps_legacy_link_when_new_link_fails(tmp_path: Path):
 
     assert not report.ok
     assert report.migrated == 0
-    assert old.is_symlink()
+    assert _is_link(old)
 
 
 def test_install_ignores_legacy_dir_when_it_is_the_config_dir(tmp_path: Path):
@@ -153,7 +174,7 @@ def test_install_ignores_legacy_dir_when_it_is_the_config_dir(tmp_path: Path):
 
     assert report.ok
     assert report.migrated == 0
-    assert (config_dir / "plugins" / "demo").is_symlink()
+    assert _is_link(config_dir / "plugins" / "demo")
 
 
 def test_install_ignores_legacy_plugins_dir_that_aliases_the_new_one(tmp_path: Path):
@@ -163,13 +184,13 @@ def test_install_ignores_legacy_plugins_dir_that_aliases_the_new_one(tmp_path: P
     _write_generated_antigravity(repo_root)
     (config_dir / "plugins").mkdir(parents=True)
     legacy_dir.mkdir()
-    (legacy_dir / "plugins").symlink_to(config_dir / "plugins")
+    _make_link(legacy_dir / "plugins", config_dir / "plugins")
 
     report = install(repo_root=repo_root, config_dir=config_dir, legacy_config_dir=legacy_dir)
 
     assert report.ok
     assert report.migrated == 0
-    assert (config_dir / "plugins" / "demo").is_symlink()
+    assert _is_link(config_dir / "plugins" / "demo")
 
 
 def test_install_removes_legacy_links_for_plugins_no_longer_generated(tmp_path: Path):
@@ -183,7 +204,7 @@ def test_install_removes_legacy_links_for_plugins_no_longer_generated(tmp_path: 
 
     assert report.ok
     assert report.migrated == 1
-    assert not gone.is_symlink()
+    assert not _is_link(gone)
 
 
 def test_failed_install_keeps_legacy_links_for_removed_plugins(tmp_path: Path):
@@ -197,7 +218,7 @@ def test_failed_install_keeps_legacy_links_for_removed_plugins(tmp_path: Path):
     report = install(repo_root=repo_root, config_dir=config_dir, legacy_config_dir=legacy_dir)
 
     assert not report.ok
-    assert gone.is_symlink()
+    assert _is_link(gone)
 
 
 def test_uninstall_also_removes_repo_links_from_the_legacy_dir(tmp_path: Path):
@@ -211,7 +232,7 @@ def test_uninstall_also_removes_repo_links_from_the_legacy_dir(tmp_path: Path):
 
     assert report.ok
     assert report.removed == 1
-    assert not old.is_symlink()
+    assert not _is_link(old)
 
 
 def test_install_errors_when_nothing_generated(tmp_path: Path):
